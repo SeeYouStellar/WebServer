@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <pthread.h>  // complie with -pthread
 #include <strings.h>
-// #include <linux/in.h>
+#include <unistd.h>
 
 #define PORT 8080 
 #define BACKLOG 10 // 允许的最大socket连接数
@@ -130,7 +130,7 @@ body
 get req: url包含了host以及请求内容
 post req: url不包含请求内容，请求内容放在body中
 */
-void* acceptRequest(void *clientSock) {
+void acceptRequest(void *clientSock) {
     int clientfd = *(int*)clientSock;
     char buf[1024];
 
@@ -142,7 +142,7 @@ void* acceptRequest(void *clientSock) {
     char body[1024];
     int cgi = 0;
     int numCharOfLine = getline(clientfd, buf, sizeof(buf));
-
+    struct stat st;
     // 获取method
     int i = 0, j = 0;
     while(i < sizeof(buf) && buf[i] != ' ' && j < sizeof(method)-1){
@@ -161,117 +161,89 @@ void* acceptRequest(void *clientSock) {
     }
     url[j] = '\0';
 
-    // 判断method
+    // 判断method 同时判断是否是动态网页请求（cgi）
     if(strcasecmp(method, "POST") && strcasecmp(method, "GET")){
         methodUnimplemented(clientfd);
     }else if(strcasecmp(method, "GET") == 0){
-        parseGetRequestURL(url, path, query, sizeof(url), sizeof(path), sizeof(query));
+        cgi = parseGetRequestURL(url, path, query, sizeof(url), sizeof(path), sizeof(query));
     }else if(strcasecmp(method, "POST") == 0){
         cgi = 1;
     }   
 
-    // 
+    sprintf(path, ".%s", path); 
+
+    /**
+     * ! path有可能最后有'/'也可能没有
+     * ! 如果已经有了说明它肯定目录, 所以需要提前加上文件名
+     * ! 如果不是以'/'结尾，则有可能是目录，也可能不是，不能盲目判断，需要等stat函数判断
+     */ 
+    if (path[strlen(path) - 1] == '/') //如果url是目录则定位至该目录下index.html
+        strcat(path, "index.html");
+
+    // 查找path指向的资源
+    if(stat(path, &st) == -1){
+        // 未找到该资源，要把剩余的报文内容读取并丢弃
+        while ((numCharOfLine > 0) && strcmp("\n", buf)) // 报文结束是'\n'，head与body中间的空行是"\r\n"。所以不会中途停止
+            numCharOfLine = get_line(clientSock, buf, sizeof(buf)); //从客户端读取数据到buf
+        not_found(clientSock); 
+    } else {
+        // 找到了资源
+        if(st.st_mode & __S_IFMT == __S_IFDIR){  // 查看linux的inode节点 __S_IFMT是掩码 __S_IFDIR是目录文件
+            // 发现是目录
+            strcat(path, "/index.html");
+        }
+        /**
+         * ! S_IXUSR:用户有执行权限
+         * ! S_IXGRP:用户组有执行权限
+         * ! S_IXOTH:其他有执行权限
+         */
+        if (st.st_mode & S_IXUSR || st.st_mode & S_IXGRP || st.st_mode & S_IXOTH){
+            cgi = 1;
+        }
+        if(cgi == 1){
+            dynamicCgi(clientfd, method, path, query);
+        }else{
+            staticFile(clientfd, method, path, query);
+        }
+    }
+    close(clientfd);
+    return ;
+}
+void staticFile(int clientfd, char* method, char* path, char* query){
+    
+}
+void dynamicCgi(int clientfd, char* method, char* path, char* query){
+
 }
 /*
 get请求的url字段：
-host/path?query1&query2
+path?query1&query2
+
+实际测试时发的url：
+1. get path
+2. get path?index=1
+3. get path?index=2
+4. post path
 */
-void parseGetRequestURL(char* url, char* path, char* query, int usize, int psize, int qsize) {
+int parseGetRequestURL(char* url, char* path, char* query, int usize, int psize, int qsize) {
     // 解析出get请求url中的path
+    int cgi = 0;
     int i = 0, j = 0;
     while(i < usize-1 && url[i] != '?' && j < psize-1){
         path[j++] = url[i++];
     }
     path[j] = '\0';
-    j = 0;
-    while(i < usize-1 && url[i] != '\n' && j < qsize-1){
-        query[j++] = url[i++];
-    }
-    query[j] = '\0';
-}
-void accept_Requset(void *tclient){
-    // 获取http请求，并逐行解析
-    int client = *(int *)tclient;
-    char buf[1024];
-    int numchars;
-    char method[255]; //保存请求行中的方法GET或者POST
-    char url[255]; //保存请求行中的url字段
-    char path[512]; //保存请求行中文件的服务器的路径
-    size_t i, j;
-    struct stat st;
-    int cgi = 0;      /* becomes true if server decides this is a CGI
-                        * program */
-    char *query_string = NULL; // GET请求中？之后的查询参数
-
-    numchars = get_line(client, buf, sizeof(buf)); //读取第一行
-    i = 0; j = 0;
-    while (!ISspace(buf[j]) && (i < sizeof(method) - 1)) //读取请求方法
-    {
-        method[i] = buf[j];
-        i++; j++;
-    }
-    method[i] = '\0';
-
-    if (strcasecmp(method, "GET") && strcasecmp(method, "POST")) //如果不是GET或者POST方法则返回501错误
-    {
-        unimplemented(client);
-        return NULL;
-    }
-
-    if (strcasecmp(method, "POST") == 0)
-        cgi = 1;
-
-    i = 0;
-    while (ISspace(buf[j]) && (j < sizeof(buf)))
-        j++;
-    while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf))) //读取请求的url路径
-    {
-        url[i] = buf[j];
-        i++; j++;
-    }
-    url[i] = '\0';
-
-    if (strcasecmp(method, "GET") == 0)
-    {
-        query_string = url; //请求信息
-        while ((*query_string != '?') && (*query_string != '\0')) // 截取“？”之前的字符，这之前部分为路径之后部分为参数
-        query_string++;
-        if (*query_string == '?') // 如果url中存在“？”，则该请求是动态请求
-        {
-        cgi = 1;
-        *query_string = '\0';
-        query_string++;
+    if(i < usize-1 && url[i] == '?'){  // 当出现'?'时，后面的数据即为请求内容。说明这是条动态网页请求
+        cgi = 1;  
+        j = 0;
+        while(i < usize-1 && url[i] != '\n' && j < qsize-1){
+            query[j++] = url[i++];
         }
+        query[j] = '\0';
     }
-
-    //根据url拼接url在服务器上面的路径
-    sprintf(path, "htdocs%s", url); 
-    if (path[strlen(path) - 1] == '/') //如果url是目录则定位至该目录下index.html
-        strcat(path, "index.html");
-    //查找url指向的文件
-    if (stat(path, &st) == -1) { //如果未找到文件
-        while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-        numchars = get_line(client, buf, sizeof(buf)); //从客户端读取数据到buf
-        not_found(client); //回应客户端未找到
-    }
-    else
-    {
-        if ((st.st_mode & S_IFMT) == S_IFDIR) //如果path为目录，则默认使用该目录下index.html文件
-            strcat(path, "/index.html");
-        //如果path是可执行文件，则设置cgi标志
-        if ((st.st_mode & S_IXUSR) ||
-            (st.st_mode & S_IXGRP) ||
-            (st.st_mode & S_IXOTH)    )
-            cgi = 1;
-        if (!cgi) //静态页面请求
-            serve_file(client, path); //直接返回文件信息
-        else //动态页面请求
-            execute_cgi(client, path, method, query_string); //执行cgi脚本
-    }
-
-    close(client); //关闭客户端套接字
-    return NULL;
+    return cgi;
 }
+
 
 void methodUnimplemented(int client)
 {
