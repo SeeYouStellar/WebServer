@@ -32,3 +32,15 @@ connect()
 ## http请求发起到响应的过程
 
 ## 通用网关接口(CGI,Common Gateway Interface)
+
+
+pthread_create
+
+如何从一个文件描述符中读取http报文
+
+recv 
+
+strcasecmp : compare two strings ignoring case
+
+get req: url包含了host以及请求内容。报文大小在1024字节范围内。
+post req: url不包含请求内容，请求内容放在body中。没有报文大小的大小
