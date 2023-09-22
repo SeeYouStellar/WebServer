@@ -79,3 +79,40 @@ Thus, to test for a regular file (for example), one could write:
            if ((sb.st_mode & S_IFMT) == S_IFREG) {
                /* Handle regular file */
            }
+
+
+文件读写
+
+fopen
+fgets
+feof
+
+进程间通信的方法
+
+1. 匿名管道
+2. 有名管道
+3. 共享内存
+fork产生的父子进程，当某个进程改变内存数据时，两个进程是不共享内存的，但是若只是读取某个数据，那么这个数据是被共享的。
+4. 消息队列
+5. socket
+6. 信号
+7. 信号量
+
+
+线程间通信的方法
+
+
+socket之间写/取数据
+send()
+receive()
+
+读取缓冲区，写缓冲区
+read()
+write()
+
+fork()
+dup2()  https://blog.csdn.net/qq_28114615/article/details/94746655
+历史难题
+
+
+标准输入输出的重定向

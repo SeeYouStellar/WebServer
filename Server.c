@@ -10,11 +10,14 @@
 #include <pthread.h>  // complie with -pthread
 #include <strings.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #define PORT 8080 
 #define BACKLOG 10 // 允许的最大socket连接数
 #define IP "172.21.251.217"
 #define HOST ""
+#define STDIN 0
+#define STDOUT 1
 int main() {
     
     int port = PORT;
@@ -173,8 +176,9 @@ void acceptRequest(void *clientSock) {
     sprintf(path, ".%s", path); 
 
     /**
+     * ? 当path是目录时，默认访问index.html
      * ! path有可能最后有'/'也可能没有
-     * ! 如果已经有了说明它肯定目录, 所以需要提前加上文件名
+     * ! 如果已经有了说明它肯定目录, 所以需要提前加上文件名index.html
      * ! 如果不是以'/'结尾，则有可能是目录，也可能不是，不能盲目判断，需要等stat函数判断
      */ 
     if (path[strlen(path) - 1] == '/') //如果url是目录则定位至该目录下index.html
@@ -209,11 +213,157 @@ void acceptRequest(void *clientSock) {
     close(clientfd);
     return ;
 }
-void staticFile(int clientfd, char* method, char* path, char* query){
+/**
+ * staticFile功能：
+ * ! 将可直接响应客户端的文件内容与http报文头组合形成http响应报文，然后将报文写入clientSock 
+ * ! http响应报文:
+ * ? 状态行
+ * ? 头部字段（可省略）
+ * ? \r\n
+ * ? 文件内容
+ * 
+ * ! 状态行:
+ * ? HTTP-Version Status-Code Reason-Phrase \r\n
+ */
+void staticFile(int clientfd, char* method, char* filename, char* query){
     
+    FILE *resource = NULL;
+    int numchars = 1;
+    char buf[1024];
+
+    buf[0] = 'A'; buf[1] = '\0';
+    while ((numchars > 0) && strcmp("\n", buf))  // 清空请求报文的header
+        numchars = get_line(clientfd, buf, sizeof(buf));
+
+    resource = fopen(filename, "r");
+    if (resource == NULL)
+        not_found(clientfd);
+    else
+    {
+        header(clientfd);
+        cat(clientfd, resource);
+    }
+    fclose(resource);
 }
 void dynamicCgi(int clientfd, char* method, char* path, char* query){
+    // 使用管道进行进程间通信
+    int cgi_in[2], cgi_out[2];
+    int status;
+    char buf[512];
+    int numchars;
+    int content_length = -1;
+    
+    // todo 针对报文剩余部分，不同的method采取不同的措施
 
+    if(strcasecmp(method, "GET") == 0){
+        while ((numchars > 0) && strcmp("\n", buf))  // 清空请求报文的header
+            numchars = get_line(clientfd, buf, sizeof(buf));
+    }else{
+        // POST 截取content-length字段
+        numchars = get_line(clientfd, buf, sizeof(buf));
+        //获取HTTP消息实体的传输长度
+        while ((numchars > 0) && strcmp("\n", buf)) 
+        {
+            buf[15] = '\0';
+            if (strcasecmp(buf, "Content-Length:") == 0) //是否为Content-Length字段
+                content_length = atoi(&(buf[16])); //读取Content-Length（描述HTTP消息实体的传输长度）
+                numchars = get_line(clientfd, buf, sizeof(buf));
+            }
+            if (content_length == -1) {
+                bad_request(clientfd); //请求页面为空
+            return;
+        }
+    }
+
+    sprintf(buf, "HTTP/1.0 200 OK\r\n"); //请求成功
+    send(clientfd, buf, strlen(buf), 0);
+
+    pid_t pid;
+    if(pipe(cgi_in) == -1){
+        errorHandle("pipe");
+    }
+    if(pipe(cgi_out) == -1){
+        errorHandle("pipe");
+    }
+    pid = fork();
+    if(pid == -1){
+        errorHandle("pid");
+    }
+    
+    if(pid == 0){
+        char meth_env[255];
+        char query_env[255];
+        char length_env[255];
+
+        dup2(cgi_in[0], STDIN);  // 标准输入重定向到cgi_in[0]
+        dup2(cgi_out[1], STDOUT);  // 标准输出重定向到cgi_out[1]
+        close(cgi_in[1]);
+        close(cgi_out[0]);
+        
+        // todo 执行cgi程序
+
+        putenv(meth_env);
+        if (strcasecmp(method, "GET") == 0) {
+            //设置query_string的环境变量
+            sprintf(query_env, "QUERY_STRING=%s", query); 
+            putenv(query_env);
+        }else {   /* POST */
+        //设置content——string的环境变量
+            sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
+            putenv(length_env);
+        }
+        execl(path, path, NULL);
+
+        close(cgi_in[0]);
+        close(cgi_out[1]);
+        exit(0);
+    }else{
+        close(cgi_in[0]);
+        close(cgi_out[1]);
+
+        if(strcasecmp(method, "POST")==0){
+            while((numchars = getline(clientfd, buf, sizeof(buf))) != 0){
+                if(numchars == 0){
+                    break;
+                }
+                write(cgi_in[1], buf, sizeof(buf));
+            }
+        }else{
+            strcpy(buf, query);
+            write(cgi_in[1], buf, sizeof(buf));
+        }
+        
+        while((numchars = read(cgi_out[0], buf, sizeof(buf))) != 0){
+            if(numchars == 0){
+                break;
+            }
+            send(clientfd, buf, sizeof(buf), 0);  // 数据发送给客户端
+        }
+
+
+        close(cgi_in[1]);
+        close(cgi_out[0]);
+        waitpid(pid, &status, 0); // 等待子进程结束
+    }   
+}
+void header(int clientfd) {
+    char buf[512];
+    
+    strcpy(buf, "HTTP/1.0 200 OK\r\n");
+    send(clientfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "Content-Type: text/html\r\n");
+    send(clientfd, buf, strlen(buf), 0);
+    strcpy(buf, "\r\n");
+    send(clientfd, buf, strlen(buf), 0);
+}
+void cat(int clientfd, FILE* file) {
+    char buf[1024];
+    fgets(buf, sizeof(buf), file);
+    while(!feof(file)){
+        send(clientfd, buf, sizeof(buf), 0);
+        fgets(buf, sizeof(buf), file);
+    }
 }
 /*
 get请求的url字段：
@@ -245,7 +395,10 @@ int parseGetRequestURL(char* url, char* path, char* query, int usize, int psize,
 }
 
 
-void methodUnimplemented(int client)
-{
+void methodUnimplemented(int client){
     
+}
+
+void bad_request(int cliendfd){
+
 }
