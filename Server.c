@@ -15,7 +15,6 @@
 #define PORT 8080 
 #define BACKLOG 10 // 允许的最大socket连接数
 #define IP "172.21.251.217"
-#define HOST ""
 #define STDIN 0
 #define STDOUT 1
 #define SERVER_STRING "Server: lxyhttpd/0.1.0\r\n"
@@ -217,7 +216,7 @@ void acceptRequest(void *clientSock) {
         // 未找到该资源，要把剩余的报文内容读取并丢弃，整个报文解析到此结束
         while ((numchars > 0) && strcmp("\n", buf)) // 报文结束是'\n'，head与body中间的空行是"\r\n"。所以不会中途停止
             numchars = getLine(clientfd, buf, sizeof(buf)); 
-        not_found(clientfd); 
+        notFound(clientfd); 
     } else {
         // 找到了资源
         if(st.st_mode & __S_IFMT == __S_IFDIR){  // 查看linux的inode节点 __S_IFMT是掩码 __S_IFDIR是目录文件
@@ -273,7 +272,7 @@ void staticFile(int clientfd, char* method, char* filename, char* query){
 
     resource = fopen(filename, "r");
     if (resource == NULL)
-        not_found(clientfd);
+        notFound(clientfd);
     else
     {
         header(clientfd);
@@ -296,7 +295,6 @@ void dynamicCgi(int clientfd, const char* method, const char* path, const char* 
     char c;
     pid_t pid;
 
-    // ! 针对报文剩余部分，不同的method采取不同的措施
     /**
      * ! 针对报文剩余部分，不同的method采取不同的措施
      * ? get：报文中有价值的内容path,query,method已经解析，故丢掉剩余的报文即可（get报文没有body部分，实际就是把header丢掉）
